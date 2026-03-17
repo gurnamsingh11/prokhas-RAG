@@ -257,6 +257,23 @@
     transform: none;
   }
 
+  .btn-secondary {
+    background: transparent;
+    border: 1px solid var(--accent);
+    color: var(--accent);
+    font-size: 11px;
+    padding: 6px 10px;
+    width: 100%;
+    margin-top: 8px;
+  }
+
+  .btn-secondary:hover { background: rgba(0, 212, 255, 0.08); }
+  .btn-secondary:disabled {
+    border-color: var(--border2);
+    color: var(--text-dim);
+    cursor: not-allowed;
+  }
+
   .btn-danger {
     background: transparent;
     border: 1px solid var(--red);
@@ -268,6 +285,66 @@
   }
 
   .btn-danger:hover { background: rgba(255, 71, 87, 0.1); }
+
+  /* ── Append-zip mini drop zone ─────────────────────────────────────────── */
+  .append-zone {
+    border: 1px dashed var(--border2);
+    border-radius: var(--radius);
+    padding: 10px 12px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+    transition: all 0.2s;
+    position: relative;
+    overflow: hidden;
+    margin-top: 8px;
+  }
+
+  .append-zone:hover, .append-zone.dragover {
+    border-color: var(--green);
+    background: rgba(0, 229, 160, 0.04);
+  }
+
+  .append-zone input[type=file] {
+    position: absolute; inset: 0;
+    opacity: 0; cursor: pointer;
+  }
+
+  .append-zone-text {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--text-dim);
+    flex: 1;
+  }
+
+  .append-zone-text strong {
+    color: var(--green);
+    font-weight: 600;
+  }
+
+  .append-selected {
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--green);
+    margin-top: 4px;
+    display: none;
+    align-items: center;
+    gap: 4px;
+  }
+
+  .append-selected.show { display: flex; }
+
+  .session-card-actions {
+    display: flex;
+    gap: 6px;
+    margin-top: 8px;
+    align-items: center;
+  }
+
+  .session-card-actions .btn-danger {
+    flex: 1;
+  }
 
   /* ── Progress bar ──────────────────────────────────────────────────────── */
   .upload-progress {
@@ -870,7 +947,26 @@
           </div>
         </div>
         <div class="session-files" id="sessionFileNames"></div>
-        <button class="btn btn-danger" id="deleteCurrentBtn">✕ &nbsp;Delete Session</button>
+
+        <!-- Add more ZIP to this session -->
+        <div class="append-zone" id="appendZone">
+          <input type="file" id="appendFileInput" accept=".zip" />
+          <span style="font-size:14px;">➕</span>
+          <div class="append-zone-text"><strong>Add ZIP</strong> to this session</div>
+        </div>
+        <div class="append-selected" id="appendSelected">
+          <span>📎</span><span id="appendFileName"></span>
+        </div>
+
+        <div class="upload-progress" id="appendProgress" style="margin-top:6px;">
+          <div class="progress-bar"><div class="progress-fill" id="appendFill"></div></div>
+          <div class="progress-label" id="appendLabel">Adding…</div>
+        </div>
+
+        <div class="session-card-actions">
+          <button class="btn btn-secondary" id="appendBtn" disabled>↑ &nbsp;Add to Session</button>
+          <button class="btn btn-danger" id="deleteCurrentBtn">✕</button>
+        </div>
       </div>
     </div>
 
@@ -918,6 +1014,7 @@
 // ── State ──────────────────────────────────────────────────────────────────
 let activeSessionId = null;
 let selectedFile    = null;
+let appendFile      = null;
 let isTyping        = false;
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -961,7 +1058,7 @@ setInterval(checkServer, 5000);
 checkServer();
 $('baseUrl').addEventListener('change', checkServer);
 
-// ── File selection ─────────────────────────────────────────────────────────
+// ── File selection (new session) ───────────────────────────────────────────
 const dropZone = $('dropZone');
 const fileInput = $('fileInput');
 
@@ -995,7 +1092,41 @@ function handleFileSelect(f) {
   $('uploadBtn').disabled = false;
 }
 
-// ── Upload ─────────────────────────────────────────────────────────────────
+// ── File selection (append to session) ────────────────────────────────────
+const appendZone      = $('appendZone');
+const appendFileInput = $('appendFileInput');
+
+appendFileInput.addEventListener('change', e => {
+  const f = e.target.files[0];
+  if (f) handleAppendFileSelect(f);
+});
+
+['dragover', 'dragleave', 'drop'].forEach(evt =>
+  appendZone.addEventListener(evt, e => {
+    e.preventDefault();
+    if (evt === 'dragover') appendZone.classList.add('dragover');
+    else {
+      appendZone.classList.remove('dragover');
+      if (evt === 'drop') {
+        const f = e.dataTransfer.files[0];
+        if (f) handleAppendFileSelect(f);
+      }
+    }
+  })
+);
+
+function handleAppendFileSelect(f) {
+  if (!f.name.toLowerCase().endsWith('.zip')) {
+    toast('Only .zip files are supported', 'error');
+    return;
+  }
+  appendFile = f;
+  $('appendFileName').textContent = f.name;
+  $('appendSelected').classList.add('show');
+  $('appendBtn').disabled = false;
+}
+
+// ── Upload: create new session ─────────────────────────────────────────────
 $('uploadBtn').addEventListener('click', async () => {
   if (!selectedFile) return;
 
@@ -1026,10 +1157,8 @@ $('uploadBtn').addEventListener('click', async () => {
 
     fill.style.width = '100%';
     label.textContent = 'Done!';
-
     toast(`Session created — ${body.chunks_indexed} chunks indexed`, 'success');
 
-    // Reset upload UI
     setTimeout(() => {
       prog.classList.remove('show');
       fill.style.width = '0%';
@@ -1048,6 +1177,86 @@ $('uploadBtn').addEventListener('click', async () => {
     btn.disabled = false;
     btn.textContent = '↑  Upload & Index';
     toast(`Upload failed: ${err.message}`, 'error', 5000);
+  }
+});
+
+// ── Upload: append to existing session ────────────────────────────────────
+$('appendBtn').addEventListener('click', async () => {
+  if (!appendFile || !activeSessionId) return;
+
+  const btn   = $('appendBtn');
+  const prog  = $('appendProgress');
+  const fill  = $('appendFill');
+  const label = $('appendLabel');
+
+  btn.disabled = true;
+  btn.textContent = '⟳  Adding…';
+  prog.classList.add('show');
+  fill.style.width = '30%';
+  label.textContent = 'Uploading ZIP…';
+
+  const form = new FormData();
+  form.append('file', appendFile, appendFile.name);
+
+  try {
+    fill.style.width = '60%';
+    label.textContent = 'Indexing & merging…';
+
+    const r = await fetch(api(`/sessions/${activeSessionId}/upload`), {
+      method: 'POST',
+      body: form,
+    });
+    const body = await r.json();
+
+    if (!r.ok) {
+      throw new Error(body.detail || `HTTP ${r.status}`);
+    }
+
+    fill.style.width = '100%';
+    label.textContent = 'Merged!';
+
+    toast(
+      `+${body.files_added} file(s), +${body.chunks_added} chunks → ${body.total_chunks} total`,
+      'success',
+    );
+
+    // Update session card counters immediately
+    $('sessionFiles').textContent  = body.total_files;
+    $('sessionChunks').textContent = body.total_chunks;
+
+    // Append new file tags without clearing existing ones
+    const existingTags = new Set(
+      [...$('sessionFileNames').querySelectorAll('.file-tag')]
+        .map(el => el.textContent)
+    );
+    // Re-fetch the session to get the full updated file list
+    const infoR = await fetch(api(`/sessions/${activeSessionId}`));
+    if (infoR.ok) {
+      const info = await infoR.json();
+      $('sessionFileNames').innerHTML = info.files_processed
+        .map(f => `<span class="file-tag">${f}</span>`).join('');
+    }
+
+    // Append a system notice to the chat
+    appendSystemMessage(`📦 Added ${body.files_added} more file(s) — ${body.chunks_added} new chunks merged into this session.`);
+
+    setTimeout(() => {
+      prog.classList.remove('show');
+      fill.style.width = '0%';
+      btn.textContent = '↑  Add to Session';
+      appendFile = null;
+      appendFileInput.value = '';
+      $('appendSelected').classList.remove('show');
+    }, 1200);
+
+    await refreshSessions();
+
+  } catch (err) {
+    fill.style.width = '0%';
+    prog.classList.remove('show');
+    btn.disabled = false;
+    btn.textContent = '↑  Add to Session';
+    toast(`Append failed: ${err.message}`, 'error', 5000);
   }
 });
 
@@ -1099,6 +1308,15 @@ async function activateSessionFromList(sid) {
 
 function activateSession(sid, meta) {
   activeSessionId = sid;
+
+  // Reset any pending append file for the previous session
+  appendFile = null;
+  appendFileInput.value = '';
+  $('appendSelected').classList.remove('show');
+  $('appendProgress').classList.remove('show');
+  $('appendFill').style.width = '0%';
+  $('appendBtn').disabled = true;
+  $('appendBtn').textContent = '↑  Add to Session';
 
   // Sidebar card
   $('sessionCardId').textContent = sid;

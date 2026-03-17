@@ -1,8 +1,14 @@
 """
 Upload service.
 
-Handles the full ingest pipeline:
-  zip upload → extract → load docs → smart chunk → embed → FAISS store → session
+Two public entry points
+-----------------------
+ingest_zip(zip_bytes)
+    Create a brand-new session from a zip file.
+
+ingest_zip_into_session(zip_bytes, session_id)
+    Append documents from a zip file to an existing session.
+    The FAISS index is extended in-place; conversation history is preserved.
 """
 
 import logging
@@ -19,8 +25,13 @@ from src.chunking.smart_chunker import smart_chunk_documents
 from src.config.config import settings
 from src.embeddings.embedding_model import get_embedding_model
 from src.loaders.universal_loader import UniversalDocumentLoader
-from src.memory.session_registry import SessionMeta, create_session
-from src.vectorstore.session_store import build_session_store
+from src.memory.session_registry import (
+    SessionMeta,
+    append_to_session,
+    create_session,
+    get_session,
+)
+from src.vectorstore.session_store import add_to_session_store, build_session_store
 
 logger = logging.getLogger(__name__)
 
@@ -31,21 +42,95 @@ _SUPPORTED_EXTENSIONS = (
 )
 
 
+# ── Public: create new session ────────────────────────────────────────────────
+
+
 def ingest_zip(zip_bytes: bytes) -> SessionMeta:
     """
-    Full ingest pipeline for a zip file.
+    Full ingest pipeline for a zip file — creates a new session.
 
-    Parameters
-    ----------
-    zip_bytes : raw bytes of the uploaded zip archive.
+    Returns SessionMeta for the newly created session.
+    """
+    chunks, filenames = _extract_and_chunk(zip_bytes)
 
-    Returns
-    -------
-    SessionMeta for the newly created session.
+    embedding_model = get_embedding_model()
+    session_meta = create_session(
+        files_processed=filenames,
+        chunks_indexed=len(chunks),
+    )
+    build_session_store(
+        session_id=session_meta.session_id,
+        chunks=chunks,
+        embeddings=embedding_model,
+    )
+
+    logger.info(
+        "Ingest complete for NEW session %s: %d files, %d chunks.",
+        session_meta.session_id,
+        len(filenames),
+        len(chunks),
+    )
+    return session_meta
+
+
+# ── Public: append to existing session ───────────────────────────────────────
+
+
+def ingest_zip_into_session(zip_bytes: bytes, session_id: str) -> SessionMeta:
+    """
+    Append documents from a zip file into an existing session.
+
+    * Embeds new chunks and merges them into the existing FAISS index.
+    * Updates session metadata (file list, chunk count).
+    * Conversation history (InMemorySaver) is untouched — the chat context
+      simply gains more searchable documents immediately.
+
+    Raises ValueError if the session does not exist or has expired.
+    """
+    # Guard: session must exist before we do any heavy work
+    meta = get_session(session_id)
+    if meta is None:
+        raise ValueError(f"Session '{session_id}' not found or has expired.")
+
+    chunks, filenames = _extract_and_chunk(zip_bytes)
+
+    embedding_model = get_embedding_model()
+
+    # Merge new vectors into the existing FAISS index (creates one if absent)
+    total_vectors = add_to_session_store(
+        session_id=session_id,
+        chunks=chunks,
+        embeddings=embedding_model,
+    )
+
+    # Update session metadata
+    updated_meta = append_to_session(
+        session_id=session_id,
+        new_files=filenames,
+        new_chunks=len(chunks),
+    )
+
+    logger.info(
+        "Append complete for session %s: +%d files, +%d chunks → %d total vectors.",
+        session_id,
+        len(filenames),
+        len(chunks),
+        total_vectors,
+    )
+    return updated_meta
+
+
+# ── Shared pipeline: extract → load → chunk ──────────────────────────────────
+
+
+def _extract_and_chunk(zip_bytes: bytes) -> Tuple[List[Document], List[str]]:
+    """
+    Extract a zip, load all supported documents, smart-chunk them.
+    Returns (chunks, filenames).
+    Raises ValueError for empty or unsupported archives.
     """
     extract_dir = tempfile.mkdtemp(prefix="rag_", dir=settings.UPLOAD_TMP_DIR)
     try:
-        # ── 1. Extract zip ────────────────────────────────────────────────────
         supported_files = _extract_zip(zip_bytes, extract_dir)
         if not supported_files:
             raise ValueError(
@@ -53,12 +138,10 @@ def ingest_zip(zip_bytes: bytes) -> SessionMeta:
                 f"({', '.join(sorted(_SUPPORTED_EXTENSIONS))})."
             )
 
-        # ── 2. Load documents ─────────────────────────────────────────────────
         raw_docs, filenames = _load_documents(supported_files)
         if not raw_docs:
             raise ValueError("All supported files produced empty documents.")
 
-        # ── 3. Smart chunk ────────────────────────────────────────────────────
         embedding_model = get_embedding_model()
         chunks = smart_chunk_documents(
             docs=raw_docs,
@@ -68,32 +151,13 @@ def ingest_zip(zip_bytes: bytes) -> SessionMeta:
             breakpoint_threshold_type=settings.SEMANTIC_BREAKPOINT_THRESHOLD_TYPE,
             breakpoint_threshold_amount=settings.SEMANTIC_BREAKPOINT_THRESHOLD_AMOUNT,
         )
-
-        # ── 4. Embed + build FAISS store ──────────────────────────────────────
-        session_meta = create_session(
-            files_processed=filenames,
-            chunks_indexed=len(chunks),
-        )
-        build_session_store(
-            session_id=session_meta.session_id,
-            chunks=chunks,
-            embeddings=embedding_model,
-        )
-
-        logger.info(
-            "Ingest complete for session %s: %d files, %d chunks.",
-            session_meta.session_id,
-            len(filenames),
-            len(chunks),
-        )
-        return session_meta
+        return chunks, filenames
 
     finally:
-        # Always clean up extracted files — embeddings are now in RAM
         shutil.rmtree(extract_dir, ignore_errors=True)
 
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
+# ── Low-level helpers ─────────────────────────────────────────────────────────
 
 
 def _extract_zip(zip_bytes: bytes, extract_dir: str) -> List[str]:

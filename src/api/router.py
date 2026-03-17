@@ -3,11 +3,12 @@ FastAPI router — all endpoints.
 
 Endpoints
 ---------
-POST /sessions/upload          – Upload zip, create session, return session_id
-GET  /sessions                 – List all active sessions
-GET  /sessions/{session_id}    – Session info
-DELETE /sessions/{session_id}  – Delete session + embeddings
-POST /sessions/{session_id}/chat – Send a message, get RAGResponse
+POST /sessions/upload                   – Upload zip → create NEW session
+POST /sessions/{session_id}/upload      – Upload zip → append to EXISTING session
+GET  /sessions                          – List all active sessions
+GET  /sessions/{session_id}             – Session info
+DELETE /sessions/{session_id}           – Delete session + embeddings
+POST /sessions/{session_id}/chat        – Send a message, get RAGResponse
 """
 
 import logging
@@ -16,7 +17,7 @@ from fastapi import APIRouter, File, HTTPException, Path, UploadFile, status
 from pydantic import BaseModel
 
 from src.agents.rag_agent import run_rag_query
-from src.api.upload_service import ingest_zip
+from src.api.upload_service import ingest_zip, ingest_zip_into_session
 from src.memory.session_registry import (
     delete_session,
     get_session,
@@ -29,21 +30,21 @@ from src.schemas.responses import (
     SessionCreatedOut,
     SessionInfoOut,
     SourceReferenceOut,
+    ZipAddedOut,
 )
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-# ── dependency: TTL sweep ─────────────────────────────────────────────────────
+# ── Dependency: TTL sweep ─────────────────────────────────────────────────────
 
 
 def _expire_sweep():
-    """Called on every request to clean up idle sessions."""
     maybe_expire_sessions()
 
 
-# ── Upload ────────────────────────────────────────────────────────────────────
+# ── Upload: create new session ────────────────────────────────────────────────
 
 
 @router.post(
@@ -52,10 +53,10 @@ def _expire_sweep():
     status_code=status.HTTP_201_CREATED,
     summary="Upload a zip archive to create a new RAG session",
 )
-async def upload_zip(
+async def upload_zip_new(
     file: UploadFile = File(
         ..., description="A .zip archive containing PDFs, DOCX, and/or images"
-    )
+    ),
 ):
     _expire_sweep()
 
@@ -83,6 +84,74 @@ async def upload_zip(
         message="Session created. You can now chat using the session_id.",
         files_processed=len(session_meta.files_processed),
         chunks_indexed=session_meta.chunks_indexed,
+    )
+
+
+# ── Upload: append to existing session ───────────────────────────────────────
+
+
+@router.post(
+    "/sessions/{session_id}/upload",
+    response_model=ZipAddedOut,
+    status_code=status.HTTP_200_OK,
+    summary="Upload an additional zip archive into an existing session",
+    description=(
+        "Embeds the new documents and merges them into the session's existing "
+        "FAISS vector store. Conversation history is preserved and the new "
+        "content is immediately searchable."
+    ),
+)
+async def upload_zip_append(
+    session_id: str = Path(..., description="ID of the session to append to"),
+    file: UploadFile = File(
+        ..., description="A .zip archive containing PDFs, DOCX, and/or images"
+    ),
+):
+    _expire_sweep()
+
+    # Validate session exists before reading file bytes
+    if get_session(session_id) is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Session not found.",
+        )
+
+    if not file.filename or not file.filename.lower().endswith(".zip"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Only .zip files are accepted.",
+        )
+
+    # Snapshot counts before append for the diff in the response
+    meta_before = get_session(session_id)
+    files_before = len(meta_before.files_processed)
+    chunks_before = meta_before.chunks_indexed
+
+    try:
+        zip_bytes = await file.read()
+        updated_meta = ingest_zip_into_session(zip_bytes, session_id)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from exc
+    except Exception as exc:
+        logger.exception(
+            "Unexpected error during append ingest for session %s.", session_id
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)
+        ) from exc
+
+    files_added = len(updated_meta.files_processed) - files_before
+    chunks_added = updated_meta.chunks_indexed - chunks_before
+
+    return ZipAddedOut(
+        session_id=session_id,
+        message=f"Successfully added {files_added} file(s) and {chunks_added} chunk(s) to the session.",
+        files_added=files_added,
+        chunks_added=chunks_added,
+        total_files=len(updated_meta.files_processed),
+        total_chunks=updated_meta.chunks_indexed,
     )
 
 

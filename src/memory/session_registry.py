@@ -51,7 +51,7 @@ class SessionMeta:
     ) -> None:
         now = datetime.now(timezone.utc)
         self.session_id = session_id
-        self.files_processed = files_processed
+        self.files_processed = list(files_processed)
         self.chunks_indexed = chunks_indexed
         self.created_at = now
         self.last_active = now
@@ -91,6 +91,41 @@ def create_session(files_processed: List[str], chunks_indexed: int) -> SessionMe
         session_id,
         len(files_processed),
         chunks_indexed,
+    )
+    return meta
+
+
+def append_to_session(
+    session_id: str,
+    new_files: List[str],
+    new_chunks: int,
+) -> SessionMeta:
+    """
+    Add more files and chunks to an existing session's metadata.
+
+    Filenames are deduplicated so uploading the same zip twice does not
+    double-count files (though the vectors will still be merged — that is
+    caught earlier in the upload service).
+
+    Raises ValueError if the session does not exist or has expired.
+    """
+    meta = _REGISTRY.get(session_id)
+    if meta is None:
+        raise ValueError(f"Session '{session_id}' not found or has expired.")
+
+    existing = set(meta.files_processed)
+    truly_new = [f for f in new_files if f not in existing]
+    meta.files_processed.extend(truly_new)
+    meta.chunks_indexed += new_chunks
+    meta.touch()
+
+    logger.info(
+        "Session %s appended: +%d files (%d new), +%d chunks → total %d chunks.",
+        session_id,
+        len(new_files),
+        len(truly_new),
+        new_chunks,
+        meta.chunks_indexed,
     )
     return meta
 

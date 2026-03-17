@@ -55,6 +55,45 @@ def build_session_store(
     return store
 
 
+def add_to_session_store(
+    session_id: str,
+    chunks: List[Document],
+    embeddings: Embeddings,
+) -> int:
+    """
+    Embed *chunks* and merge them into an existing FAISS index for *session_id*.
+
+    If no store exists yet for the session, a new one is created (same as
+    build_session_store).  This lets callers always use this function for
+    the "add more documents" flow without needing to check first.
+
+    Returns the total number of vectors now in the index.
+    """
+    existing = _STORE_REGISTRY.get(session_id)
+
+    if existing is None:
+        logger.info(
+            "No existing store for session %s — creating new one with %d chunks.",
+            session_id,
+            len(chunks),
+        )
+        store = FAISS.from_documents(chunks, embeddings)
+        _STORE_REGISTRY[session_id] = store
+    else:
+        logger.info(
+            "Merging %d new chunks into existing store for session %s.",
+            len(chunks),
+            session_id,
+        )
+        # FAISS.add_documents embeds and appends vectors in-place
+        existing.add_documents(chunks)
+        store = existing
+
+    total = store.index.ntotal
+    logger.info("Session %s store now has %d vectors.", session_id, total)
+    return total
+
+
 def get_session_retriever(
     session_id: str,
     top_k: int = 5,

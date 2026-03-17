@@ -69,3 +69,12 @@ class DeleteResponseOut(BaseModel):
     session_id: str
     deleted: bool
     message: str
+
+
+class ZipAddedOut(BaseModel):
+    session_id: str
+    message: str
+    files_added: int
+    chunks_added: int
+    total_files: int
+    total_chunks: int

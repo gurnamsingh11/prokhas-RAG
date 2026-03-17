@@ -35,8 +35,8 @@ except ImportError:
 def smart_chunk_documents(
     docs: List[Document],
     embeddings: Embeddings,
-    chunk_size: int = 800,
-    chunk_overlap: int = 150,
+    chunk_size: int = 600,
+    chunk_overlap: int = 120,
     breakpoint_threshold_type: str = "percentile",
     breakpoint_threshold_amount: float = 85.0,
 ) -> List[Document]:

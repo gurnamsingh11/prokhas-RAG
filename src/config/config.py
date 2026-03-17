@@ -21,8 +21,8 @@ class Settings(BaseSettings):
     LLM_REPETITION_PENALTY: float = 1.03
 
     # ── Chunking ─────────────────────────────────────────────────────────────
-    CHUNK_SIZE: int = 800
-    CHUNK_OVERLAP: int = 150
+    CHUNK_SIZE: int = 600
+    CHUNK_OVERLAP: int = 120
     SEMANTIC_BREAKPOINT_THRESHOLD_TYPE: str = (
         "percentile"  # percentile | std_dev | interquartile
     )
