@@ -32,8 +32,6 @@ class RAGResponse(TypedDict):
 
 
 # ── HTTP response models (Pydantic — only for FastAPI serialisation) ──────────
-# These are pure data-transfer objects; they mirror RAGResponse but are
-# separate so the LLM schema stays TypedDict-only.
 
 from pydantic import BaseModel
 
@@ -52,6 +50,7 @@ class ChatResponseOut(BaseModel):
 
 class SessionCreatedOut(BaseModel):
     session_id: str
+    session_name: Optional[str] = None  # human label if supplied at upload time
     message: str
     files_processed: int
     chunks_indexed: int
@@ -59,6 +58,7 @@ class SessionCreatedOut(BaseModel):
 
 class SessionInfoOut(BaseModel):
     session_id: str
+    session_name: Optional[str] = None
     files_processed: List[str]
     chunks_indexed: int
     created_at: str
@@ -78,3 +78,23 @@ class ZipAddedOut(BaseModel):
     chunks_added: int
     total_files: int
     total_chunks: int
+
+
+class SessionRestoredOut(BaseModel):
+    session_id: str
+    session_name: Optional[str] = None
+    message: str
+    files_processed: List[str]
+    chunks_indexed: int
+    created_at: str
+    last_active: str
+
+
+class SessionLookupOut(BaseModel):
+    session_id: str
+    session_name: str
+    files_processed: List[str]
+    chunks_indexed: int
+    created_at: str
+    last_active: str
+    status: str  # "active" | "on_disk_only"

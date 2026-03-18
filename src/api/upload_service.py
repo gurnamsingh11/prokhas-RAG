@@ -3,12 +3,12 @@ Upload service.
 
 Two public entry points
 -----------------------
-ingest_zip(zip_bytes)
+ingest_zip(zip_bytes, session_name=None)
     Create a brand-new session from a zip file.
+    session_name is an optional human-readable label for later lookup.
 
 ingest_zip_into_session(zip_bytes, session_id)
     Append documents from a zip file to an existing session.
-    The FAISS index is extended in-place; conversation history is preserved.
 """
 
 import logging
@@ -17,7 +17,7 @@ import shutil
 import tempfile
 import zipfile
 from pathlib import Path
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 from langchain_core.documents import Document
 
@@ -45,9 +45,20 @@ _SUPPORTED_EXTENSIONS = (
 # ── Public: create new session ────────────────────────────────────────────────
 
 
-def ingest_zip(zip_bytes: bytes) -> SessionMeta:
+def ingest_zip(
+    zip_bytes: bytes,
+    session_name: Optional[str] = None,
+) -> SessionMeta:
     """
     Full ingest pipeline for a zip file — creates a new session.
+
+    Parameters
+    ----------
+    zip_bytes:    Raw bytes of the uploaded zip archive.
+    session_name: Optional human-readable label (e.g. "q3-reports").
+                  If provided, users can look up this session by name later via
+                  GET /sessions/lookup?name=q3-reports instead of remembering
+                  the UUID session_id.
 
     Returns SessionMeta for the newly created session.
     """
@@ -57,6 +68,7 @@ def ingest_zip(zip_bytes: bytes) -> SessionMeta:
     session_meta = create_session(
         files_processed=filenames,
         chunks_indexed=len(chunks),
+        session_name=session_name,
     )
     build_session_store(
         session_id=session_meta.session_id,
@@ -65,8 +77,9 @@ def ingest_zip(zip_bytes: bytes) -> SessionMeta:
     )
 
     logger.info(
-        "Ingest complete for NEW session %s: %d files, %d chunks.",
+        "Ingest complete for NEW session %s (name=%r): %d files, %d chunks.",
         session_meta.session_id,
+        session_name,
         len(filenames),
         len(chunks),
     )
@@ -77,33 +90,19 @@ def ingest_zip(zip_bytes: bytes) -> SessionMeta:
 
 
 def ingest_zip_into_session(zip_bytes: bytes, session_id: str) -> SessionMeta:
-    """
-    Append documents from a zip file into an existing session.
-
-    * Embeds new chunks and merges them into the existing FAISS index.
-    * Updates session metadata (file list, chunk count).
-    * Conversation history (InMemorySaver) is untouched — the chat context
-      simply gains more searchable documents immediately.
-
-    Raises ValueError if the session does not exist or has expired.
-    """
-    # Guard: session must exist before we do any heavy work
+    """Append documents from a zip file into an existing session."""
     meta = get_session(session_id)
     if meta is None:
         raise ValueError(f"Session '{session_id}' not found or has expired.")
 
     chunks, filenames = _extract_and_chunk(zip_bytes)
-
     embedding_model = get_embedding_model()
 
-    # Merge new vectors into the existing FAISS index (creates one if absent)
     total_vectors = add_to_session_store(
         session_id=session_id,
         chunks=chunks,
         embeddings=embedding_model,
     )
-
-    # Update session metadata
     updated_meta = append_to_session(
         session_id=session_id,
         new_files=filenames,
@@ -120,15 +119,10 @@ def ingest_zip_into_session(zip_bytes: bytes, session_id: str) -> SessionMeta:
     return updated_meta
 
 
-# ── Shared pipeline: extract → load → chunk ──────────────────────────────────
+# ── Shared pipeline ───────────────────────────────────────────────────────────
 
 
 def _extract_and_chunk(zip_bytes: bytes) -> Tuple[List[Document], List[str]]:
-    """
-    Extract a zip, load all supported documents, smart-chunk them.
-    Returns (chunks, filenames).
-    Raises ValueError for empty or unsupported archives.
-    """
     extract_dir = tempfile.mkdtemp(prefix="rag_", dir=settings.UPLOAD_TMP_DIR)
     try:
         supported_files = _extract_zip(zip_bytes, extract_dir)
@@ -157,18 +151,12 @@ def _extract_and_chunk(zip_bytes: bytes) -> Tuple[List[Document], List[str]]:
         shutil.rmtree(extract_dir, ignore_errors=True)
 
 
-# ── Low-level helpers ─────────────────────────────────────────────────────────
-
-
 def _extract_zip(zip_bytes: bytes, extract_dir: str) -> List[str]:
-    """Extract zip and return absolute paths of supported files."""
     zip_path = os.path.join(extract_dir, "upload.zip")
     with open(zip_path, "wb") as f:
         f.write(zip_bytes)
-
     with zipfile.ZipFile(zip_path, "r") as zf:
         zf.extractall(extract_dir)
-
     os.remove(zip_path)
 
     supported: List[str] = []
@@ -182,7 +170,6 @@ def _extract_zip(zip_bytes: bytes, extract_dir: str) -> List[str]:
 
 
 def _load_documents(file_paths: List[str]) -> Tuple[List[Document], List[str]]:
-    """Load all files; skip and log any that raise an error."""
     loader = UniversalDocumentLoader()
     all_docs: List[Document] = []
     loaded_names: List[str] = []
@@ -192,7 +179,6 @@ def _load_documents(file_paths: List[str]) -> Tuple[List[Document], List[str]]:
             docs = loader.load(path)
             all_docs.extend(docs)
             loaded_names.append(os.path.basename(path))
-            logger.debug("Loaded %d docs from %s", len(docs), path)
         except Exception as exc:  # noqa: BLE001
             logger.warning("Failed to load %s: %s — skipping.", path, exc)
 

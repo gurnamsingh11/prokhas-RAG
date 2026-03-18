@@ -225,6 +225,96 @@
 
   .selected-file.show { display: flex; }
 
+  /* ── Session name input ──────────────────────────────────────────────────── */
+  .name-input-wrap {
+    margin-top: 10px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 6px 10px;
+    transition: border-color 0.2s;
+  }
+
+  .name-input-wrap:focus-within { border-color: var(--accent); }
+
+  .name-input-label {
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    white-space: nowrap;
+  }
+
+  #sessionNameInput {
+    background: transparent;
+    border: none;
+    outline: none;
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--text);
+    flex: 1;
+    min-width: 0;
+  }
+
+  #sessionNameInput::placeholder { color: var(--text-dim); }
+
+  /* ── Lookup bar ────────────────────────────────────────────────────────── */
+  .lookup-wrap {
+    margin-top: 0;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .lookup-input {
+    flex: 1;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 5px 10px;
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--text);
+    outline: none;
+    transition: border-color 0.2s;
+  }
+
+  .lookup-input:focus { border-color: var(--accent); }
+  .lookup-input::placeholder { color: var(--text-dim); }
+
+  .btn-lookup {
+    background: transparent;
+    border: 1px solid var(--accent);
+    color: var(--accent);
+    font-family: var(--mono);
+    font-size: 11px;
+    padding: 5px 10px;
+    border-radius: var(--radius);
+    cursor: pointer;
+    transition: all 0.15s;
+    white-space: nowrap;
+  }
+
+  .btn-lookup:hover { background: rgba(0,212,255,0.08); }
+
+  .session-name-tag {
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--green);
+    background: rgba(0,229,160,0.08);
+    border: 1px solid rgba(0,229,160,0.2);
+    border-radius: 3px;
+    padding: 1px 6px;
+    margin-bottom: 6px;
+    display: none;
+  }
+
+  .session-name-tag.show { display: inline-block; }
+
   /* ── Upload button ─────────────────────────────────────────────────────── */
   .btn {
     width: 100%;
@@ -447,6 +537,48 @@
     margin: 2px;
     color: var(--text-mid);
   }
+
+  /* ── On-disk session badge ────────────────────────────────────────────── */
+  .session-item.on-disk {
+    border-style: dashed;
+    opacity: 0.75;
+    cursor: default;
+  }
+
+  .session-item.on-disk:hover { border-color: var(--amber); background: rgba(255,184,48,0.04); opacity: 1; }
+
+  .disk-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    font-family: var(--mono);
+    font-size: 9px;
+    padding: 1px 6px;
+    border-radius: 3px;
+    background: rgba(255,184,48,0.1);
+    border: 1px solid rgba(255,184,48,0.3);
+    color: var(--amber);
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    margin-top: 4px;
+  }
+
+  .session-restore-btn {
+    position: absolute;
+    top: 8px; right: 32px;
+    background: none;
+    border: none;
+    cursor: pointer;
+    color: var(--amber);
+    font-size: 12px;
+    line-height: 1;
+    padding: 2px 4px;
+    border-radius: 3px;
+    transition: all 0.15s;
+    title: 'Restore from disk';
+  }
+
+  .session-restore-btn:hover { background: rgba(255,184,48,0.12); }
 
   /* ── Sessions list ─────────────────────────────────────────────────────── */
   .sessions-list {
@@ -894,7 +1026,7 @@
 
   <!-- ── Header ──────────────────────────────────────────────────────────── -->
   <header>
-    <div class="logo">RAG<span>/</span>TESTER</div>
+    <div class="logo">Prokhas<span>-</span>RAG</div>
     <div class="header-badge">v1.0</div>
     <div class="header-right">
       <div class="base-url-wrap">
@@ -924,6 +1056,11 @@
         <span id="selectedFileName"></span>
       </div>
 
+      <div class="name-input-wrap">
+        <span class="name-input-label">Name</span>
+        <input id="sessionNameInput" type="text" placeholder="optional label (e.g. `username`)" spellcheck="false" />
+      </div>
+
       <div class="upload-progress" id="uploadProgress">
         <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
         <div class="progress-label" id="progressLabel">Uploading...</div>
@@ -936,6 +1073,7 @@
       <!-- Active session card -->
       <div class="session-card" id="sessionCard" style="margin-top:12px;">
         <div class="session-id" id="sessionCardId"></div>
+        <div class="session-name-tag" id="sessionNameTag"></div>
         <div class="session-meta">
           <div class="meta-item">
             <div class="meta-label">Files</div>
@@ -971,8 +1109,12 @@
     </div>
 
     <!-- Sessions -->
-    <div class="sidebar-section" style="padding-bottom:8px;">
+    <div class="sidebar-section" style="padding-bottom:10px;">
       <div class="section-label">Sessions</div>
+      <div class="lookup-wrap">
+        <input class="lookup-input" id="lookupInput" type="text" placeholder="Find by name…" spellcheck="false" />
+        <button class="btn-lookup" id="lookupBtn">↵ Find</button>
+      </div>
     </div>
     <div class="sessions-list" id="sessionsList">
       <div class="empty-state">No sessions yet</div>
@@ -1143,6 +1285,8 @@ $('uploadBtn').addEventListener('click', async () => {
 
   const form = new FormData();
   form.append('file', selectedFile, selectedFile.name);
+  const nameVal = $('sessionNameInput').value.trim();
+  if (nameVal) form.append('session_name', nameVal);
 
   try {
     fill.style.width = '60%';
@@ -1166,10 +1310,15 @@ $('uploadBtn').addEventListener('click', async () => {
       selectedFile = null;
       fileInput.value = '';
       $('selectedFile').classList.remove('show');
+      $('sessionNameInput').value = '';
     }, 1200);
 
     await refreshSessions();
-    activateSession(body.session_id, body);
+    activateSession(body.session_id, {
+      ...body,
+      _files: [],         // file list not returned on upload, refreshed on next GET
+      _name: body.session_name || null,
+    });
 
   } catch (err) {
     fill.style.width = '0%';
@@ -1263,31 +1412,66 @@ $('appendBtn').addEventListener('click', async () => {
 // ── Sessions ───────────────────────────────────────────────────────────────
 async function refreshSessions() {
   try {
-    const r = await fetch(api('/sessions'));
-    if (!r.ok) return;
-    const sessions = await r.json();
-    renderSessionsList(sessions);
+    // Fetch both active (RAM) and all persisted (disk) sessions in parallel
+    const [activeRes, persistedRes] = await Promise.all([
+      fetch(api('/sessions')),
+      fetch(api('/sessions/persisted')),
+    ]);
+    const activeSessions   = activeRes.ok   ? await activeRes.json()   : [];
+    const persistedEntries = persistedRes.ok ? await persistedRes.json() : [];
+    renderSessionsList(activeSessions, persistedEntries);
   } catch { /* server down */ }
 }
 
-function renderSessionsList(sessions) {
+function renderSessionsList(activeSessions, persistedEntries) {
   const container = $('sessionsList');
-  if (!sessions.length) {
+
+  // Build a quick lookup of active session metadata by ID
+  const activeMap = {};
+  activeSessions.forEach(s => { activeMap[s.session_id] = s; });
+
+  // Build combined list: active sessions first, then disk-only
+  const diskOnly = persistedEntries.filter(e => e.status === 'on_disk_only');
+  const allEntries = [
+    ...activeSessions.map(s => ({ ...s, status: 'active' })),
+    ...diskOnly,
+  ];
+
+  if (!allEntries.length) {
     container.innerHTML = '<div class="empty-state">No sessions yet</div>';
     return;
   }
-  container.innerHTML = sessions.map(s => `
-    <div class="session-item ${s.session_id === activeSessionId ? 'active' : ''}"
-         data-sid="${s.session_id}"
-         onclick="activateSessionFromList('${s.session_id}')">
-      <div class="session-item-id">${s.session_id}</div>
-      <div class="session-item-meta">
-        ${s.files_processed.length} file${s.files_processed.length !== 1 ? 's' : ''} · ${s.chunks_indexed} chunks
-      </div>
-      <button class="session-delete-btn" title="Delete"
-              onclick="event.stopPropagation(); deleteSession('${s.session_id}')">✕</button>
-    </div>
-  `).join('');
+
+  container.innerHTML = allEntries.map(entry => {
+    const sid    = entry.session_id;
+    const isDisk = entry.status === 'on_disk_only';
+    const isActive = sid === activeSessionId;
+
+    const meta = activeMap[sid];
+    const fileCount   = meta ? meta.files_processed.length : '?';
+    const chunkCount  = meta ? meta.chunks_indexed : '?';
+    const metaLine    = meta
+      ? `${fileCount} file${fileCount !== 1 ? 's' : ''} · ${chunkCount} chunks`
+      : 'Saved on disk — click ↺ to restore';
+
+    const diskBadge   = isDisk ? '<span class="disk-badge">💾 on disk</span>' : '';
+    const restoreBtn  = isDisk
+      ? `<button class="session-restore-btn" title="Restore from disk"
+                 onclick="event.stopPropagation(); restoreSession('${sid}')">↺</button>`
+      : '';
+
+    return `
+    <div class="session-item ${isActive ? 'active' : ''} ${isDisk ? 'on-disk' : ''}"
+         data-sid="${sid}"
+         onclick="${isDisk ? '' : `activateSessionFromList('${sid}')`}">
+      <div class="session-item-id">${sid}</div>
+      <div class="session-item-meta">${metaLine}</div>
+      ${diskBadge}
+      ${restoreBtn}
+      <button class="session-delete-btn" title="Delete permanently"
+              onclick="event.stopPropagation(); deleteSession('${sid}')">✕</button>
+    </div>`;
+  }).join('');
 }
 
 async function activateSessionFromList(sid) {
@@ -1299,7 +1483,9 @@ async function activateSessionFromList(sid) {
       session_id: sid,
       files_processed: meta.files_processed.length,
       chunks_indexed: meta.chunks_indexed,
+      session_name: meta.session_name || null,
       _files: meta.files_processed,
+      _name: meta.session_name || null,
     });
   } catch {
     toast('Could not load session', 'error');
@@ -1322,6 +1508,14 @@ function activateSession(sid, meta) {
   $('sessionCardId').textContent = sid;
   $('sessionFiles').textContent  = meta.files_processed ?? meta._files?.length ?? '?';
   $('sessionChunks').textContent = meta.chunks_indexed ?? '?';
+
+  const sname = meta.session_name || meta._name || null;
+  if (sname) {
+    $('sessionNameTag').textContent = '🏷 ' + sname;
+    $('sessionNameTag').classList.add('show');
+  } else {
+    $('sessionNameTag').classList.remove('show');
+  }
 
   const files = meta._files || [];
   $('sessionFileNames').innerHTML = files.map(f =>
@@ -1370,6 +1564,29 @@ async function deleteSession(sid) {
 $('deleteCurrentBtn').addEventListener('click', () => {
   if (activeSessionId) deleteSession(activeSessionId);
 });
+
+async function restoreSession(sid) {
+  toast('Restoring session from disk…', 'info', 2000);
+  try {
+    const r = await fetch(api(`/sessions/${sid}/restore`), { method: 'POST' });
+    const body = await r.json();
+    if (!r.ok) {
+      toast(`Restore failed: ${body.detail || r.status}`, 'error', 5000);
+      return;
+    }
+    toast(`Session restored — ${body.chunks_indexed} chunks ready`, 'success');
+    await refreshSessions();
+    // Activate the restored session
+    activateSession(sid, {
+      session_id: sid,
+      files_processed: body.files_processed.length,
+      chunks_indexed: body.chunks_indexed,
+      _files: body.files_processed,
+    });
+  } catch (err) {
+    toast(`Restore error: ${err.message}`, 'error', 5000);
+  }
+}
 
 // ── Chat ───────────────────────────────────────────────────────────────────
 $('chatInput').addEventListener('keydown', e => {
@@ -1515,7 +1732,45 @@ function escapeHtml(str) {
     .replace(/\n/g, '<br>');
 }
 
-// ── Boot ───────────────────────────────────────────────────────────────────
+// ── Lookup by name ────────────────────────────────────────────────────────────
+$('lookupBtn').addEventListener('click', lookupByName);
+$('lookupInput').addEventListener('keydown', e => {
+  if (e.key === 'Enter') lookupByName();
+});
+
+async function lookupByName() {
+  const name = $('lookupInput').value.trim();
+  if (!name) return;
+
+  toast(`Searching for session "${name}"…`, 'info', 2000);
+  try {
+    const r = await fetch(api(`/sessions/lookup?name=${encodeURIComponent(name)}`));
+    const body = await r.json();
+
+    if (!r.ok) {
+      toast(body.detail || `Not found: ${name}`, 'error', 4000);
+      return;
+    }
+
+    const statusMsg = body.status === 'restored_from_disk' ? '↺ Restored from disk' : '✓ Session found';
+    toast(`${statusMsg} — "${name}"`, 'success');
+    $('lookupInput').value = '';
+
+    await refreshSessions();
+    activateSession(body.session_id, {
+      session_id: body.session_id,
+      files_processed: body.files_processed.length,
+      chunks_indexed: body.chunks_indexed,
+      session_name: body.session_name,
+      _files: body.files_processed,
+      _name: body.session_name,
+    });
+  } catch (err) {
+    toast(`Lookup error: ${err.message}`, 'error', 5000);
+  }
+}
+
+// ── Boot ───────────────────────────────────────────────────────────────────────
 refreshSessions();
 setInterval(refreshSessions, 15000);
 </script>

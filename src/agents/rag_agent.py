@@ -70,24 +70,11 @@ class GraphState(TypedDict):
 # ── System prompt ─────────────────────────────────────────────────────────────
 
 _SYSTEM = (
-    "You are a precise document assistant (Insurance Domain).\n\n"
-    "First determine the intent of the user's message.\n"
-    "1. If the message is a greeting "
-    "(e.g., 'hi', 'hello', 'thanks', 'good morning'), respond naturally and politely. "
-    "Do NOT reference the context. Leave the sources list empty.\n\n"
-    "2. If the message is a question, answer ONLY using the information "
-    "from the provided CONTEXT.\n\n"
-    "Rules for answering questions:\n"
-    "- Use only the information in the CONTEXT.\n"
-    "- Do NOT use outside knowledge.\n"
-    "- If the CONTEXT does not contain enough information, say that the answer "
-    "is not available in the provided context.\n"
-    "- If the question is unrelated to the CONTEXT, politely explain that you "
-    "can only answer questions based on the provided documents.\n\n"
-    "Sources:\n"
-    "- Populate the 'sources' list only with documents actually used in the answer.\n"
-    "- Do NOT invent sources.\n"
-    "- Each relevant_excerpt must be under 200 characters.\n\n"
+    "You are a precise document assistant. "
+    "Answer the user's question using ONLY the context provided below. "
+    "If the context does not contain enough information, say so honestly. "
+    "Always populate the 'sources' list with every document you drew from; "
+    "keep each relevant_excerpt under 200 characters.\n\n"
     "CONTEXT:\n{context}"
 )
 
@@ -109,7 +96,15 @@ def _make_retrieve_node(session_id: str):
         )
         query = last_human.content if last_human else ""
 
-        retriever = get_session_retriever(session_id, top_k=settings.RETRIEVER_TOP_K)
+        # Pass embeddings so the retriever can lazy-load from disk
+        # if this session was restored from disk metadata but not yet in RAM
+        from src.embeddings.embedding_model import get_embedding_model  # noqa: PLC0415
+
+        retriever = get_session_retriever(
+            session_id,
+            embeddings=get_embedding_model(),
+            top_k=settings.RETRIEVER_TOP_K,
+        )
         if retriever is None or not query:
             return {"context": "No documents available."}
 
