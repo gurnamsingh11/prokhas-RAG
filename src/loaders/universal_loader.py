@@ -84,6 +84,6 @@ class UniversalDocumentLoader:
     def _load_image(self, file_path: str) -> List[Document]:
         filename = self._get_filename(file_path)
         doc = extract_text_from_image(image_path=file_path, image_name=filename)
-        doc.metadata.setdefault("source", filename)
-        doc.metadata.setdefault("page_label", "")
+        # doc.metadata.setdefault("source", filename)
+        # doc.metadata.setdefault("page_label", "")
         return [doc]

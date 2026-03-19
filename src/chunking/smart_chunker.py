@@ -69,14 +69,20 @@ def smart_chunk_documents(
         source = doc.metadata.get("source", "unknown")
         page_label = doc.metadata.get("page_label", "")
 
-        chunks = _chunk_single_doc(
-            doc=doc,
-            embeddings=embeddings,
-            chunk_size=chunk_size,
-            chunk_overlap=chunk_overlap,
-            breakpoint_threshold_type=breakpoint_threshold_type,
-            breakpoint_threshold_amount=breakpoint_threshold_amount,
-        )
+        # Images are kept as a single chunk — splitting a multi-line description
+        # across chunk boundaries would break retrieval for image content.
+        if doc.metadata.get("do_not_split"):
+            chunks = [doc]
+            logger.debug("Skipping chunking for image doc: %s", source)
+        else:
+            chunks = _chunk_single_doc(
+                doc=doc,
+                embeddings=embeddings,
+                chunk_size=chunk_size,
+                chunk_overlap=chunk_overlap,
+                breakpoint_threshold_type=breakpoint_threshold_type,
+                breakpoint_threshold_amount=breakpoint_threshold_amount,
+            )
 
         # Guarantee metadata on every chunk
         for chunk in chunks:

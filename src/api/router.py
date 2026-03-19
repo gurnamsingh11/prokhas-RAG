@@ -5,13 +5,13 @@ Endpoints
 ---------
 POST   /sessions/upload                 – Upload zip → create NEW session (optional name)
 POST   /sessions/{session_id}/upload    – Upload zip → append to EXISTING session
-POST   /sessions/{session_id}/restore   – Re-load a disk-persisted session into RAM
+POST   /sessions/{session_id}/restore   – Explicitly re-load a disk-persisted session
 GET    /sessions/lookup?name=...        – Find a session by human-readable name
-GET    /sessions                        – List all active (in-RAM) sessions
-GET    /sessions/persisted              – List all sessions saved on disk
-GET    /sessions/{session_id}           – Session info
+GET    /sessions                        – List sessions (RAM + auto-restores disk ones)
+GET    /sessions/persisted              – List all session IDs saved on disk with status
+GET    /sessions/{session_id}           – Session info (auto-restores from disk if needed)
 DELETE /sessions/{session_id}           – Delete session + embeddings (disk + RAM)
-POST   /sessions/{session_id}/chat      – Send a message, get RAGResponse
+POST   /sessions/{session_id}/chat      – Chat (auto-restores from disk if needed)
 """
 
 import logging
@@ -32,6 +32,7 @@ from pydantic import BaseModel
 from src.agents.rag_agent import run_rag_query
 from src.api.upload_service import ingest_zip, ingest_zip_into_session
 from src.memory.session_registry import (
+    SessionMeta,
     delete_session,
     get_session,
     list_sessions,
@@ -39,6 +40,7 @@ from src.memory.session_registry import (
     lookup_session_on_disk_by_name,
     maybe_expire_sessions,
     restore_session_from_disk,
+    restore_sessions_from_disk,
 )
 from src.schemas.responses import (
     ChatResponseOut,
@@ -56,11 +58,48 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-# ── Dependency: TTL sweep ─────────────────────────────────────────────────────
+# ── Helpers ───────────────────────────────────────────────────────────────────
 
 
-def _expire_sweep():
+def _expire_sweep() -> None:
+    """Evict RAM-only sessions that have been idle past SESSION_TTL_SECONDS."""
     maybe_expire_sessions()
+
+
+def _get_or_restore(session_id: str) -> SessionMeta:
+    """
+    Return the SessionMeta for *session_id*, transparently restoring from disk
+    if the session has been TTL-evicted from RAM or the server has restarted.
+
+    Raises HTTP 404 only if no data exists anywhere (RAM or disk) — meaning
+    the session was explicitly deleted or never created.
+
+    This is the single place that handles the "it works right after upload but
+    returns 404 hours later" problem.  Every endpoint that needs a live session
+    should call this instead of get_session() directly.
+    """
+    # Fast path: still in RAM
+    meta = get_session(session_id)
+    if meta is not None:
+        return meta
+
+    # Slow path: try to restore from disk (handles TTL eviction + server restarts)
+    logger.info(
+        "Session %s not in RAM — attempting auto-restore from disk.", session_id
+    )
+    meta = restore_session_from_disk(session_id)
+
+    if meta is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=(
+                f"Session '{session_id}' not found. "
+                "It may have been explicitly deleted or never created."
+            ),
+        )
+
+    logger.info("Session %s auto-restored from disk successfully.", session_id)
+    return meta
 
 
 # ── Upload: create new session ────────────────────────────────────────────────
@@ -73,8 +112,8 @@ def _expire_sweep():
     summary="Upload a zip archive to create a new RAG session",
     description=(
         "Creates a new session and indexes the documents inside the zip. "
-        "Supply an optional `session_name` (e.g. 'q3-reports') so you can "
-        "look up this session by name later via GET /sessions/lookup?name=..."
+        "Supply an optional `session_name` so you can look up this session "
+        "by name later via GET /sessions/lookup?name=..."
     ),
 )
 async def upload_zip_new(
@@ -84,9 +123,9 @@ async def upload_zip_new(
     session_name: Optional[str] = Form(
         default=None,
         description=(
-            "Optional human-readable label for this session (e.g. 'my-project'). "
-            "Used to look up the session later without needing the UUID. "
-            "Must be unique across all sessions on disk — duplicate names are rejected."
+            "Optional human-readable label (e.g. 'my-project'). "
+            "Use it to look up the session later without needing the UUID. "
+            "Must be unique — duplicate names are rejected with 409."
         ),
     ),
 ):
@@ -98,7 +137,7 @@ async def upload_zip_new(
             detail="Only .zip files are accepted.",
         )
 
-    # Reject duplicate session names to avoid ambiguous lookups
+    # Reject duplicate session names
     if session_name:
         session_name = session_name.strip()
         if lookup_session_by_name(session_name) is not None:
@@ -135,7 +174,7 @@ async def upload_zip_new(
         session_id=session_meta.session_id,
         session_name=session_meta.session_name,
         message=(
-            f"Session created. "
+            "Session created. "
             + (
                 f"Accessible by name '{session_meta.session_name}'. "
                 if session_meta.session_name
@@ -162,18 +201,15 @@ async def upload_zip_append(
     file: UploadFile = File(...),
 ):
     _expire_sweep()
+    # Auto-restore if evicted — user shouldn't have to restore before appending
+    meta_before = _get_or_restore(session_id)
 
-    if get_session(session_id) is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Session not found."
-        )
     if not file.filename or not file.filename.lower().endswith(".zip"):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Only .zip files are accepted.",
         )
 
-    meta_before = get_session(session_id)
     files_before = len(meta_before.files_processed)
     chunks_before = meta_before.chunks_indexed
 
@@ -200,18 +236,24 @@ async def upload_zip_append(
     )
 
 
-# ── Restore session from disk ─────────────────────────────────────────────────
+# ── Restore session from disk (explicit) ─────────────────────────────────────
 
 
 @router.post(
     "/sessions/{session_id}/restore",
     response_model=SessionRestoredOut,
     status_code=status.HTTP_200_OK,
-    summary="Restore a previously created session from disk into RAM",
+    summary="Explicitly restore a disk-persisted session into RAM",
+    description=(
+        "This endpoint exists for UIs that want to show a manual 'Restore' button. "
+        "For normal use you do not need to call it — chat, GET session info, and "
+        "append upload all auto-restore transparently."
+    ),
 )
 async def restore_session(session_id: str = Path(...)):
     _expire_sweep()
 
+    # If already in RAM, just return it
     existing = get_session(session_id)
     if existing is not None:
         return SessionRestoredOut(
@@ -242,11 +284,8 @@ async def restore_session(session_id: str = Path(...)):
     response_model=SessionLookupOut,
     summary="Find a session by its human-readable name",
     description=(
-        "Searches both active (in-RAM) sessions and on-disk sessions by the "
-        "session_name supplied at upload time. "
-        "If the session is found on disk but not in RAM, it is automatically "
-        "restored so it is immediately ready to chat. "
-        "Returns 404 if no session with that name exists."
+        "Searches RAM first, then disk. Auto-restores from disk if found there. "
+        "Returns 404 if no session with that name exists anywhere."
     ),
 )
 async def lookup_by_name(
@@ -256,23 +295,20 @@ async def lookup_by_name(
 ):
     _expire_sweep()
 
-    # 1. Check RAM first
+    # Check RAM
     meta = lookup_session_by_name(name)
     if meta is not None:
         return SessionLookupOut(**meta.to_dict(), status="active")
 
-    # 2. Check disk
+    # Check disk
     sid = lookup_session_on_disk_by_name(name)
     if sid is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=(
-                f"No session named '{name}' found. "
-                "Sessions are only named if you supplied session_name at upload time."
-            ),
+            detail=f"No session named '{name}' found.",
         )
 
-    # 3. Auto-restore from disk
+    # Auto-restore from disk
     meta = restore_session_from_disk(sid)
     if meta is None:
         raise HTTPException(
@@ -283,19 +319,42 @@ async def lookup_by_name(
     return SessionLookupOut(**meta.to_dict(), status="restored_from_disk")
 
 
-# ── List active sessions (RAM) ────────────────────────────────────────────────
+# ── List sessions ─────────────────────────────────────────────────────────────
 
 
-@router.get("/sessions", summary="List all sessions currently active in RAM")
+@router.get(
+    "/sessions",
+    summary="List all sessions — active in RAM plus any found on disk",
+    description=(
+        "Returns all sessions the user has ever created (that haven't been deleted). "
+        "Sessions evicted from RAM by TTL are auto-restored from disk so they "
+        "always appear in this list, never disappear after idle time."
+    ),
+)
 async def list_all_sessions():
+    """
+    Auto-restores all on-disk sessions before listing so the UI always sees
+    every session regardless of TTL eviction or server restarts.
+    """
     _expire_sweep()
+
+    # Restore any disk sessions not already in RAM
+    persisted_ids = list_persisted_session_ids()
+    in_ram = {s["session_id"] for s in list_sessions()}
+    for sid in persisted_ids:
+        if sid not in in_ram:
+            restore_session_from_disk(sid)
+
     return list_sessions()
 
 
-# ── List persisted sessions (disk) ────────────────────────────────────────────
+# ── List persisted sessions (disk status view) ─────────────────────────────────
 
 
-@router.get("/sessions/persisted", summary="List all session IDs saved on disk")
+@router.get(
+    "/sessions/persisted",
+    summary="List all session IDs saved on disk with their RAM status",
+)
 async def list_persisted_sessions():
     _expire_sweep()
     ids = list_persisted_session_ids()
@@ -312,15 +371,11 @@ async def list_persisted_sessions():
 @router.get(
     "/sessions/{session_id}",
     response_model=SessionInfoOut,
-    summary="Get metadata for a session",
+    summary="Get metadata for a session (auto-restores from disk if needed)",
 )
 async def get_session_info(session_id: str = Path(...)):
     _expire_sweep()
-    meta = get_session(session_id)
-    if meta is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Session not found."
-        )
+    meta = _get_or_restore(session_id)
     return SessionInfoOut(**meta.to_dict())
 
 
@@ -337,7 +392,8 @@ async def delete_session_endpoint(session_id: str = Path(...)):
     deleted = delete_session(session_id)
     if not deleted:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Session not found."
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Session not found.",
         )
     return DeleteResponseOut(
         session_id=session_id,
@@ -356,26 +412,25 @@ class ChatRequest(BaseModel):
 @router.post(
     "/sessions/{session_id}/chat",
     response_model=ChatResponseOut,
-    summary="Chat with a session",
+    summary="Chat with a session (auto-restores from disk if needed)",
+    description=(
+        "If the session has been idle past the TTL or the server has restarted, "
+        "the session is silently restored from disk before answering. "
+        "The caller never needs to call /restore manually."
+    ),
 )
 async def chat(session_id: str = Path(...), body: ChatRequest = ...):
     _expire_sweep()
 
     if not body.message.strip():
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail="Message cannot be empty."
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Message cannot be empty.",
         )
 
-    meta = get_session(session_id)
-    if meta is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=(
-                "Session not found or evicted from RAM. "
-                "Use POST /sessions/{session_id}/restore or "
-                "GET /sessions/lookup?name=... to bring it back."
-            ),
-        )
+    # Auto-restore transparently — this is the fix for the "works on upload,
+    # breaks after a few hours" problem reported by the UI developer.
+    meta = _get_or_restore(session_id)
 
     try:
         rag_response = run_rag_query(session_id, body.message)
