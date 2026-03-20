@@ -15,6 +15,7 @@ Lifecycle
 * get_session_retriever() — loads from RAM cache; lazy-loads from disk if needed
 * delete_session_store() — removes RAM cache AND wipes the disk folder
 * load_session_store()   — explicit disk → RAM load (used at startup / restore)
+* evict_session_store()  — removes from RAM only, disk untouched (used by TTL)
 
 Why merge_from instead of add_documents for appends?
 ------------------------------------------------------
@@ -188,6 +189,18 @@ def get_session_retriever(
     if store is None:
         return None
     return store.as_retriever(search_kwargs={"k": top_k})
+
+
+def evict_session_store(session_id: str) -> None:
+    """
+    Remove a session's FAISS index from RAM only. Disk is untouched.
+
+    Called by TTL eviction in session_registry.maybe_expire_sessions().
+    This replaces the previous pattern of importing _STORE_REGISTRY directly
+    inside the function body, which was fragile and hard to reason about.
+    """
+    _STORE_REGISTRY.pop(session_id, None)
+    logger.info("Session %s FAISS index evicted from RAM (TTL).", session_id)
 
 
 def delete_session_store(session_id: str) -> bool:

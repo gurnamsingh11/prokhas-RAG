@@ -9,6 +9,11 @@ ingest_zip(zip_bytes, session_name=None)
 
 ingest_zip_into_session(zip_bytes, session_id)
     Append documents from a zip file to an existing session.
+
+Fix 3: ingest_zip_into_session previously called get_session() only, which
+returned None for any TTL-evicted session and raised a 422 error even though
+the session's data was intact on disk. It now mirrors the auto-restore pattern
+used by the router's _get_or_restore() helper.
 """
 
 import logging
@@ -30,6 +35,7 @@ from src.memory.session_registry import (
     append_to_session,
     create_session,
     get_session,
+    restore_session_from_disk,  # Fix 3: needed for auto-restore on append
 )
 from src.vectorstore.session_store import add_to_session_store, build_session_store
 
@@ -90,10 +96,28 @@ def ingest_zip(
 
 
 def ingest_zip_into_session(zip_bytes: bytes, session_id: str) -> SessionMeta:
-    """Append documents from a zip file into an existing session."""
+    """
+    Append documents from a zip file into an existing session.
+
+    Fix 3: Previously only checked RAM (get_session), which raised a ValueError
+    for any session that had been TTL-evicted — even though the session's FAISS
+    index and metadata were intact on disk. Now mirrors the auto-restore pattern
+    used everywhere else: RAM first, then disk, then 404.
+    """
+    # Try RAM first, then transparently restore from disk
     meta = get_session(session_id)
     if meta is None:
-        raise ValueError(f"Session '{session_id}' not found or has expired.")
+        logger.info(
+            "Session %s not in RAM during append — attempting restore from disk.",
+            session_id,
+        )
+        meta = restore_session_from_disk(session_id)
+
+    if meta is None:
+        raise ValueError(
+            f"Session '{session_id}' not found. "
+            "It may have been permanently deleted or never created."
+        )
 
     chunks, filenames = _extract_and_chunk(zip_bytes)
     embedding_model = get_embedding_model()

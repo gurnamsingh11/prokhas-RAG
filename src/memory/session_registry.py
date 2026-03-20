@@ -52,7 +52,9 @@ from langgraph.checkpoint.memory import InMemorySaver
 from src.config.config import settings
 from src.vectorstore.session_store import (
     delete_session_store,
+    evict_session_store,  # Fix 1: clean public API instead of internal import
     list_persisted_session_ids,
+    load_session_store,  # Fix 2: eager FAISS reload on restore
     session_store_exists,
 )
 
@@ -281,7 +283,13 @@ def delete_session(session_id: str) -> bool:
 def restore_session_from_disk(session_id: str) -> Optional[SessionMeta]:
     """
     Load a single session from disk into the in-process registry.
-    The FAISS index is NOT loaded into RAM here — lazy-loaded on first query.
+
+    Fix 2: The FAISS index is now eagerly loaded into RAM here — previously
+    it was only lazy-loaded on the first retrieval call, which made the session
+    appear "active" in the registry but caused silent failures if the embeddings
+    weren't threaded through correctly. Eager loading makes the restore
+    atomic and easy to reason about: either the whole session is ready, or
+    it isn't.
     """
     if session_id in _REGISTRY:
         return _REGISTRY[session_id]
@@ -299,8 +307,17 @@ def restore_session_from_disk(session_id: str) -> Optional[SessionMeta]:
 
     meta = SessionMeta.from_dict(raw)
     _REGISTRY[session_id] = meta
+
+    # Eagerly load the FAISS index into RAM so the session is fully ready.
+    # Importing here avoids a circular import at module level:
+    #   session_registry → session_store → (no back-reference needed)
+    #   session_registry → embedding_model → config  (safe)
+    from src.embeddings.embedding_model import get_embedding_model  # noqa: PLC0415
+
+    load_session_store(session_id, get_embedding_model())
+
     logger.info(
-        "Session %s (name=%r) restored from disk into registry.",
+        "Session %s (name=%r) restored from disk into registry (FAISS index loaded).",
         session_id,
         meta.session_name,
     )
@@ -326,6 +343,10 @@ def maybe_expire_sessions() -> None:
     """
     Evict sessions idle longer than SESSION_TTL_SECONDS from RAM.
     Disk data (FAISS index + meta.json) is NEVER deleted by TTL.
+
+    Fix 1: uses the public evict_session_store() instead of importing
+    _STORE_REGISTRY directly inside the function body, which was fragile
+    (silent no-op if the import failed or was cached differently).
     """
     now = datetime.now(timezone.utc)
     expired = [
@@ -336,6 +357,4 @@ def maybe_expire_sessions() -> None:
     for sid in expired:
         logger.info("Session %s evicted from RAM (TTL). Disk index preserved.", sid)
         _REGISTRY.pop(sid, None)
-        from src.vectorstore.session_store import _STORE_REGISTRY  # noqa: PLC0415
-
-        _STORE_REGISTRY.pop(sid, None)
+        evict_session_store(sid)  # Fix 1: clean public call, no internal import hack

@@ -12,9 +12,15 @@ GET    /sessions/persisted              – List all session IDs saved on disk w
 GET    /sessions/{session_id}           – Session info (auto-restores from disk if needed)
 DELETE /sessions/{session_id}           – Delete session + embeddings (disk + RAM)
 POST   /sessions/{session_id}/chat      – Chat (auto-restores from disk if needed)
+
+Fix 4: A threading.Lock now guards the name-uniqueness check + session creation
+in upload_zip_new. Previously two concurrent requests with the same session_name
+could both pass the duplicate check before either wrote meta.json, resulting in
+two sessions with identical names. The lock makes the check-and-create atomic.
 """
 
 import logging
+import threading
 from typing import Optional
 
 from fastapi import (
@@ -56,6 +62,10 @@ from src.vectorstore.session_store import list_persisted_session_ids
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+# Fix 4: guards the name uniqueness check + session creation so concurrent
+# requests with the same session_name can't both slip through the duplicate check.
+_session_create_lock = threading.Lock()
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -137,38 +147,56 @@ async def upload_zip_new(
             detail="Only .zip files are accepted.",
         )
 
-    # Reject duplicate session names
+    # Fix 4: hold the lock for the duration of the name check + ingest so two
+    # concurrent requests with the same name can't both pass the duplicate check.
+    # The lock is only held when session_name is provided — unnamed uploads are
+    # unaffected and remain fully concurrent.
     if session_name:
         session_name = session_name.strip()
-        if lookup_session_by_name(session_name) is not None:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=f"A session named '{session_name}' is already active. Choose a different name or delete the existing one.",
-            )
-        disk_sid = lookup_session_on_disk_by_name(session_name)
-        if disk_sid is not None:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=(
-                    f"A session named '{session_name}' already exists on disk "
-                    f"(session_id: {disk_sid}). "
-                    "Restore it with POST /sessions/{session_id}/restore, "
-                    "or delete it first."
-                ),
-            )
+        with _session_create_lock:
+            if lookup_session_by_name(session_name) is not None:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=f"A session named '{session_name}' is already active. Choose a different name or delete the existing one.",
+                )
+            disk_sid = lookup_session_on_disk_by_name(session_name)
+            if disk_sid is not None:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=(
+                        f"A session named '{session_name}' already exists on disk "
+                        f"(session_id: {disk_sid}). "
+                        "Restore it with POST /sessions/{session_id}/restore, "
+                        "or delete it first."
+                    ),
+                )
 
-    try:
-        zip_bytes = await file.read()
-        session_meta = ingest_zip(zip_bytes, session_name=session_name or None)
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
-        ) from exc
-    except Exception as exc:
-        logger.exception("Unexpected error during ingest.")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)
-        ) from exc
+            try:
+                zip_bytes = await file.read()
+                session_meta = ingest_zip(zip_bytes, session_name=session_name)
+            except ValueError as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+                ) from exc
+            except Exception as exc:
+                logger.exception("Unexpected error during ingest.")
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)
+                ) from exc
+    else:
+        # No session_name — no lock needed, run fully concurrently
+        try:
+            zip_bytes = await file.read()
+            session_meta = ingest_zip(zip_bytes, session_name=None)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+            ) from exc
+        except Exception as exc:
+            logger.exception("Unexpected error during ingest.")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)
+            ) from exc
 
     return SessionCreatedOut(
         session_id=session_meta.session_id,
