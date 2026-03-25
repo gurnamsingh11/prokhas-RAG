@@ -9,9 +9,11 @@ import logging
 import os
 from pathlib import Path
 from typing import List
-
+from pdf2image import convert_from_path
 from langchain_core.documents import Document
 from langchain_community.document_loaders import PyPDFLoader, Docx2txtLoader
+import tempfile
+from src.config.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -65,12 +67,48 @@ class UniversalDocumentLoader:
 
     def _load_pdf(self, file_path: str) -> List[Document]:
         loader = PyPDFLoader(file_path)
-        docs = loader.load()
+        if not loader:
+            "LOADER NOT AVAILABLE"
+
+        first_page = next(loader.lazy_load())
+
+        if not first_page:
+            print("NO FIRST PAGE")
+        first_text = first_page.page_content.strip()
+
+        is_scanned = not first_text or len(first_text) < 20
         filename = self._get_filename(file_path)
-        for doc in docs:
-            page_label = doc.metadata.get("page_label", "")
-            doc.metadata = {"source": filename, "page_label": str(page_label)}
-        return docs
+
+        if is_scanned:
+            print("IF LOOP SCANNED")
+            final_docs: List[Document] = []
+            images = convert_from_path(file_path, poppler_path=settings.POPPLER_PATH)
+
+            for i, image in enumerate(images):
+                with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+                    image_path = tmp.name
+                    image.save(image_path, "PNG")
+
+                ocr_docs = self._load_image(image_path)
+
+                for ocr_doc in ocr_docs:
+                    ocr_doc.metadata = {
+                        "source": filename,
+                        "page_label": str(i),
+                        "ocr": True,
+                    }
+
+                final_docs.extend(ocr_docs)
+                os.remove(image_path)
+
+            return final_docs
+
+        else:
+            docs = loader.load()
+            for doc in docs:
+                page_label = doc.metadata.get("page_label", "")
+                doc.metadata = {"source": filename, "page_label": str(page_label)}
+            return docs
 
     def _load_word(self, file_path: str) -> List[Document]:
         loader = Docx2txtLoader(file_path)

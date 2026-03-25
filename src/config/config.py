@@ -15,6 +15,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
 
+    POPPLER_PATH = r"C:\Users\gurunaml\poppler-25.12.0\Library\bin"
+
     # ── HuggingFace ──────────────────────────────────────────────────────────
     # Your HuggingFace Hub API token.
     # Required for the hosted Qwen LLM endpoint.
