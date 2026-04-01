@@ -22,7 +22,9 @@ two sessions with identical names. The lock makes the check-and-create atomic.
 import logging
 import threading
 from typing import Optional
-
+import tempfile
+import shutil
+import os
 from fastapi import (
     APIRouter,
     File,
@@ -59,6 +61,7 @@ from src.schemas.responses import (
     ZipAddedOut,
 )
 from src.vectorstore.session_store import list_persisted_session_ids
+from src.extraction.claim_extractor import ClaimExtractor
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -486,3 +489,34 @@ async def chat(session_id: str = Path(...), body: ChatRequest = ...):
         answer=rag_response["answer"],
         sources=sources_out,
     )
+
+
+@router.post("/claim-info/")
+async def get_claim_info(file: UploadFile = File(...)):
+    extractor = ClaimExtractor()
+
+    # Extract extension safely
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="File must have a name")
+
+    _, ext = os.path.splitext(file.filename)
+
+    if not ext:
+        raise HTTPException(status_code=400, detail="File must have a valid extension")
+
+    # Optional: enforce supported types (matches your loader)
+    allowed_exts = {".pdf"}
+    if ext.lower() not in allowed_exts:
+        raise HTTPException(status_code=400, detail=f"Unsupported file type: {ext}")
+
+    # Create temp file WITH extension
+    with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as temp_file:
+        shutil.copyfileobj(file.file, temp_file)
+        temp_path = temp_file.name
+
+    try:
+        result = extractor.extract_from_file(temp_path)
+        return {"data": result}
+
+    finally:
+        os.remove(temp_path)

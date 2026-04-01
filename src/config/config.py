@@ -15,7 +15,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
 
-    POPPLER_PATH = r"C:\Users\gurunaml\poppler-25.12.0\Library\bin"
+    POPPLER_PATH: str = r"C:\Users\gurunaml\poppler-25.12.0\Library\bin"
 
     # ── HuggingFace ──────────────────────────────────────────────────────────
     # Your HuggingFace Hub API token.
