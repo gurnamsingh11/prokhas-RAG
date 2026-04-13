@@ -1,3 +1,5 @@
 __pycache__/
 faiss_store/
 **.pdf
+documents/
+frontend/

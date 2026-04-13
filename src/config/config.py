@@ -10,7 +10,11 @@ Copy .env.example to .env and set at minimum:
 Everything else has sensible defaults for local development.
 """
 
+import os
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from dotenv import load_dotenv
+
+load_dotenv()  # Load environment variables from .env file
 
 
 class Settings(BaseSettings):
@@ -21,7 +25,7 @@ class Settings(BaseSettings):
     # Your HuggingFace Hub API token.
     # Required for the hosted Qwen LLM endpoint.
     # Get one at https://huggingface.co/settings/tokens
-    HUGGINGFACEHUB_API_TOKEN: str = ""
+    HUGGINGFACEHUB_API_TOKEN: str = os.getenv("HF_TOKEN")
 
     # ── Embedding model ──────────────────────────────────────────────────────
     # HuggingFace model used to embed document chunks and queries.
