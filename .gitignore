@@ -4,3 +4,4 @@ faiss_store/
 documents/
 frontend/
 **.env
+logs/

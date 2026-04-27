@@ -31,7 +31,9 @@ class Settings(BaseSettings):
     # HuggingFace model used to embed document chunks and queries.
     # Must be the SAME model across all server restarts — changing it after
     # documents have been indexed will make existing FAISS indexes incompatible.
-    EMBEDDING_MODEL_NAME: str = "google/embeddinggemma-300m"
+    EMBEDDING_MODEL_NAME: str = (
+        "google/embeddinggemma-300m"  # google/embeddinggemma-300m
+    )
 
     # "cpu" for local dev; "cuda" if a GPU is available.
     EMBEDDING_DEVICE: str = "cpu"
@@ -71,6 +73,23 @@ class Settings(BaseSettings):
     # Number of chunks retrieved per query from the FAISS index.
     # Higher values give the LLM more context but increase prompt length and cost.
     RETRIEVER_TOP_K: int = 5
+
+    # Search strategy: "similarity", "mmr", or "similarity_score_threshold".
+    # "mmr" (Maximal Marginal Relevance) reduces redundancy among retrieved chunks.
+    # "similarity_score_threshold" drops chunks below RETRIEVER_SCORE_THRESHOLD.
+    RETRIEVER_SEARCH_TYPE: str = "mmr"
+
+    # Only used when RETRIEVER_SEARCH_TYPE = "similarity_score_threshold".
+    # Chunks with a similarity score below this value are discarded.
+    RETRIEVER_SCORE_THRESHOLD: float = 0.45
+
+    # MMR diversity parameter (0 = max diversity, 1 = pure similarity).
+    # Only used when RETRIEVER_SEARCH_TYPE = "mmr".
+    RETRIEVER_MMR_LAMBDA: float = 0.7
+
+    # Number of candidates to fetch before MMR re-ranking.
+    # Should be >= RETRIEVER_TOP_K. Only used with "mmr".
+    RETRIEVER_MMR_FETCH_K: int = 20
 
     # ── Session ──────────────────────────────────────────────────────────────
     # How long (in seconds) a session can be idle before it is evicted from RAM.
@@ -122,6 +141,22 @@ class Settings(BaseSettings):
     #
     # Set to "" to run in pure in-memory mode (no disk persistence):
     FAISS_INDEX_DIR: str = "./faiss_store"
+
+    # ── Logging ──────────────────────────────────────────────────────────────
+    # Minimum log level: DEBUG, INFO, WARNING, ERROR, CRITICAL
+    LOG_LEVEL: str = "INFO"
+
+    # Directory where rotating log files are written.
+    LOG_DIR: str = "./logs"
+
+    # Maximum size (bytes) per log file before rotation. Default 10 MB.
+    LOG_MAX_BYTES: int = 10 * 1024 * 1024
+
+    # Number of rotated backup files to keep.
+    LOG_BACKUP_COUNT: int = 5
+
+    # Emit JSON on the console (useful for containerised / cloud deploys).
+    LOG_JSON_CONSOLE: bool = False
 
     model_config = SettingsConfigDict(
         env_file=".env",

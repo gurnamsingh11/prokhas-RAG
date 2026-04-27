@@ -19,6 +19,7 @@ could both pass the duplicate check before either wrote meta.json, resulting in
 two sessions with identical names. The lock makes the check-and-create atomic.
 """
 
+import asyncio
 import logging
 import threading
 from typing import Optional
@@ -176,7 +177,9 @@ async def upload_zip_new(
 
             try:
                 zip_bytes = await file.read()
-                session_meta = ingest_zip(zip_bytes, session_name=session_name)
+                session_meta = await asyncio.to_thread(
+                    ingest_zip, zip_bytes, session_name
+                )
             except ValueError as exc:
                 raise HTTPException(
                     status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
@@ -190,7 +193,7 @@ async def upload_zip_new(
         # No session_name — no lock needed, run fully concurrently
         try:
             zip_bytes = await file.read()
-            session_meta = ingest_zip(zip_bytes, session_name=None)
+            session_meta = await asyncio.to_thread(ingest_zip, zip_bytes, None)
         except ValueError as exc:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
@@ -246,7 +249,9 @@ async def upload_zip_append(
 
     try:
         zip_bytes = await file.read()
-        updated_meta = ingest_zip_into_session(zip_bytes, session_id)
+        updated_meta = await asyncio.to_thread(
+            ingest_zip_into_session, zip_bytes, session_id
+        )
     except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)

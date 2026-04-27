@@ -182,13 +182,31 @@ def get_session_retriever(
 
     Tries RAM cache first; if missing, attempts a lazy disk load (requires
     *embeddings* to be provided).  Returns None if neither source has the index.
+
+    Search strategy is controlled by settings.RETRIEVER_SEARCH_TYPE:
+      - "similarity"                 — vanilla top-K nearest neighbours
+      - "mmr"                        — Maximal Marginal Relevance (reduces redundancy)
+      - "similarity_score_threshold" — drops chunks below a score threshold
     """
     store = _STORE_REGISTRY.get(session_id)
     if store is None and embeddings is not None:
         store = _load_from_disk(session_id, embeddings)
     if store is None:
         return None
-    return store.as_retriever(search_kwargs={"k": top_k})
+
+    search_type = settings.RETRIEVER_SEARCH_TYPE
+    search_kwargs: dict = {"k": top_k}
+
+    if search_type == "mmr":
+        search_kwargs["lambda_mult"] = settings.RETRIEVER_MMR_LAMBDA
+        search_kwargs["fetch_k"] = settings.RETRIEVER_MMR_FETCH_K
+    elif search_type == "similarity_score_threshold":
+        search_kwargs["score_threshold"] = settings.RETRIEVER_SCORE_THRESHOLD
+
+    return store.as_retriever(
+        search_type=search_type,
+        search_kwargs=search_kwargs,
+    )
 
 
 def evict_session_store(session_id: str) -> None:

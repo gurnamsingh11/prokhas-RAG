@@ -50,7 +50,11 @@ from typing_extensions import Annotated, TypedDict
 
 from src.config.config import settings
 from src.embeddings.llm_model import get_chat_model
-from src.memory.session_registry import SessionMeta, get_session
+from src.memory.session_registry import (
+    SessionMeta,
+    get_session,
+    restore_session_from_disk,
+)
 from src.schemas.responses import RAGResponse
 from src.vectorstore.session_store import get_session_retriever
 
@@ -196,6 +200,12 @@ def run_rag_query(session_id: str, user_query: str) -> RAGResponse:
     RuntimeError – model returned no structured response.
     """
     session_meta = get_session(session_id)
+    if session_meta is None:
+        # Auto-restore from disk if the session was TTL-evicted or server restarted
+        logger.info(
+            "Session %s not in RAM — attempting auto-restore from disk.", session_id
+        )
+        session_meta = restore_session_from_disk(session_id)
     if session_meta is None:
         raise ValueError(f"Session '{session_id}' not found or has expired.")
 

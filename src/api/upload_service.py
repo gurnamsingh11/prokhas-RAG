@@ -21,6 +21,7 @@ import os
 import shutil
 import tempfile
 import zipfile
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import List, Optional, Tuple
 
@@ -156,20 +157,47 @@ def _extract_and_chunk(zip_bytes: bytes) -> Tuple[List[Document], List[str]]:
                 f"({', '.join(sorted(_SUPPORTED_EXTENSIONS))})."
             )
 
-        raw_docs, filenames = _load_documents(supported_files)
-        if not raw_docs:
+        embedding_model = get_embedding_model()
+
+        # --- Parallel per-file load + chunk pipeline ---
+        max_workers = min(len(supported_files), os.cpu_count() or 4, 8)
+        all_chunks: List[Document] = []
+        filenames: List[str] = []
+
+        def _process_single_file(path: str) -> Tuple[List[Document], str]:
+            """Load and chunk a single file — runs in a worker thread."""
+            loader = UniversalDocumentLoader()
+            docs = loader.load(path)
+            if not docs:
+                return [], os.path.basename(path)
+            chunks = smart_chunk_documents(
+                docs=docs,
+                embeddings=embedding_model,
+                chunk_size=settings.CHUNK_SIZE,
+                chunk_overlap=settings.CHUNK_OVERLAP,
+                breakpoint_threshold_type=settings.SEMANTIC_BREAKPOINT_THRESHOLD_TYPE,
+                breakpoint_threshold_amount=settings.SEMANTIC_BREAKPOINT_THRESHOLD_AMOUNT,
+            )
+            return chunks, os.path.basename(path)
+
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {
+                executor.submit(_process_single_file, fp): fp for fp in supported_files
+            }
+            for future in as_completed(futures):
+                fp = futures[future]
+                try:
+                    chunks, fname = future.result()
+                    if chunks:
+                        all_chunks.extend(chunks)
+                        filenames.append(fname)
+                except Exception as exc:
+                    logger.warning("Failed to process %s: %s — skipping.", fp, exc)
+
+        if not all_chunks:
             raise ValueError("All supported files produced empty documents.")
 
-        embedding_model = get_embedding_model()
-        chunks = smart_chunk_documents(
-            docs=raw_docs,
-            embeddings=embedding_model,
-            chunk_size=settings.CHUNK_SIZE,
-            chunk_overlap=settings.CHUNK_OVERLAP,
-            breakpoint_threshold_type=settings.SEMANTIC_BREAKPOINT_THRESHOLD_TYPE,
-            breakpoint_threshold_amount=settings.SEMANTIC_BREAKPOINT_THRESHOLD_AMOUNT,
-        )
-        return chunks, filenames
+        return all_chunks, filenames
 
     finally:
         shutil.rmtree(extract_dir, ignore_errors=True)
@@ -191,19 +219,3 @@ def _extract_zip(zip_bytes: bytes, extract_dir: str) -> List[str]:
 
     logger.info("Extracted %d supported files from zip.", len(supported))
     return supported
-
-
-def _load_documents(file_paths: List[str]) -> Tuple[List[Document], List[str]]:
-    loader = UniversalDocumentLoader()
-    all_docs: List[Document] = []
-    loaded_names: List[str] = []
-
-    for path in file_paths:
-        try:
-            docs = loader.load(path)
-            all_docs.extend(docs)
-            loaded_names.append(os.path.basename(path))
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("Failed to load %s: %s — skipping.", path, exc)
-
-    return all_docs, loaded_names

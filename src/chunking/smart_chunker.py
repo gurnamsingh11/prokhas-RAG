@@ -84,10 +84,23 @@ def smart_chunk_documents(
                 breakpoint_threshold_amount=breakpoint_threshold_amount,
             )
 
-        # Guarantee metadata on every chunk
+        # Guarantee metadata on every chunk AND prepend a contextual header
+        # so the embedding captures document identity. This is critical when
+        # multiple documents share the same structure but different values
+        # (e.g. claims, invoices, forms) — without the header, their chunk
+        # embeddings would be nearly identical and retrieval would mix them up.
         for chunk in chunks:
             chunk.metadata["source"] = source
             chunk.metadata["page_label"] = page_label
+
+            header_parts = [f"[Document: {source}"]
+            if page_label:
+                header_parts.append(f" | Page: {page_label}")
+            header_parts.append("]\n")
+            header = "".join(header_parts)
+
+            if not chunk.page_content.startswith(header):
+                chunk.page_content = header + chunk.page_content
 
         all_chunks.extend(chunks)
 

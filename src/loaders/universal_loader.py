@@ -68,19 +68,19 @@ class UniversalDocumentLoader:
     def _load_pdf(self, file_path: str) -> List[Document]:
         loader = PyPDFLoader(file_path)
         if not loader:
-            "LOADER NOT AVAILABLE"
+            logger.error("PyPDFLoader unavailable for %s", file_path)
 
         first_page = next(loader.lazy_load())
 
         if not first_page:
-            print("NO FIRST PAGE")
+            logger.warning("No first page found in %s", file_path)
         first_text = first_page.page_content.strip()
 
         is_scanned = not first_text or len(first_text) < 20
         filename = self._get_filename(file_path)
 
         if is_scanned:
-            print("IF LOOP SCANNED")
+            logger.info("PDF appears scanned — falling back to OCR: %s", filename)
             final_docs: List[Document] = []
             images = convert_from_path(file_path, poppler_path=settings.POPPLER_PATH)
 
